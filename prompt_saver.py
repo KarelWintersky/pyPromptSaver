@@ -15,6 +15,8 @@ import socketserver
 import json
 import os
 import re
+import signal
+import sys
 from datetime import datetime
 
 PORT = 8000
@@ -140,7 +142,6 @@ def sanitize_suffix(suffix: str) -> str:
     """Оставляет в суффиксе только безопасные для имени файла символы."""
     if not suffix:
         return ""
-    # разрешаем буквы (в т.ч. кириллицу), цифры, дефис, подчёркивание, точку
     suffix = suffix.strip()
     suffix = re.sub(r"\s+", "_", suffix)
     suffix = re.sub(r"[^\w\-.]+", "", suffix, flags=re.UNICODE)
@@ -178,6 +179,11 @@ def build_python_file(items):
     lines.append("]")
     lines.append("")
     return "\n".join(lines)
+
+
+class ReusableTCPServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -224,7 +230,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
             suffix = data.get("suffix", "")
 
-            # Если буфер пуст — берём текущие поля как один промпт.
             if prompts_buffer:
                 items = list(prompts_buffer)
             else:
@@ -256,17 +261,48 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+def _force_exit(signum, frame):
+    """Жёсткий выход по Ctrl+C / SIGTERM — без ожидания второго сигнала."""
+    print("\nОстановлено.", flush=True)
+    # Закрываем всё, что может держать процесс, и выходим немедленно.
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(0)
+
+
 def main():
-    with socketserver.TCPServer(("", PORT), Handler) as httpd:
-        print("=" * 55)
-        print(f"Сервер запущен: http://localhost:{PORT}")
-        print(f"Файлы будут сохраняться в: {SCRIPT_DIR}")
-        print("Ctrl+C — остановить.")
-        print("=" * 55)
+    # Перехватываем сигналы ДО создания сервера, чтобы даже падение
+    # на bind() не оставляло нас без обработчика.
+    signal.signal(signal.SIGINT, _force_exit)
+    signal.signal(signal.SIGTERM, _force_exit)
+
+    try:
+        httpd = ReusableTCPServer(("", PORT), Handler)
+    except OSError as e:
+        print(f"Не удалось занять порт {PORT}: {e}")
+        print(f"Проверь, не занят ли порт: lsof -i :{PORT}")
+        return
+
+    print("=" * 55)
+    print(f"Сервер запущен: http://localhost:{PORT}")
+    print(f"Файлы будут сохраняться в: {SCRIPT_DIR}")
+    print("Ctrl+C — остановить.")
+    print("=" * 55)
+    sys.stdout.flush()
+
+    try:
+        httpd.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:
+        # На случай, если обработчик сигнала по какой-то причине не сработал.
+        _force_exit(signal.SIGINT, None)
+    finally:
         try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            print("\nОстановлено.")
+            httpd.server_close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
