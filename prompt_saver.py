@@ -8,6 +8,8 @@
 - "Сохранить" — сохраняет всё содержимое буфера.
   Если буфер пуст — сохраняет текущие поля как один промпт.
 - Поле "Суффикс имени файла" — добавляется к имени файла через "_", если указан.
+- Чекбокс "фиксировать" у поля "Название промпта" — при включении это поле
+  не сбрасывается после "Добавить в группу" и "Сохранить".
 """
 
 import http.server
@@ -40,6 +42,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
     background:#2b2b2b; color:#eee; border:1px solid #444; border-radius:4px;
   }
   textarea { min-height:100px; resize:vertical; font-family:monospace; }
+  .label-row { display:flex; align-items:center; justify-content:space-between; margin-top:12px; }
+  .label-row label { margin-top:0; }
+  .fix-wrap { display:flex; align-items:center; gap:6px; font-weight:normal; color:#bbb; font-size:13px; user-select:none; cursor:pointer; }
+  .fix-wrap input { cursor:pointer; }
   .buttons { margin-top:16px; display:flex; gap:10px; }
   button {
     padding:10px 18px; border:none; border-radius:4px; cursor:pointer;
@@ -60,7 +66,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <label for="suffix">0. Суффикс имени файла (необязательно)</label>
   <input type="text" id="suffix" placeholder="например: project_x (будет добавлен через _)">
 
-  <label for="title">1. Название промпта</label>
+  <div class="label-row">
+    <label for="title">1. Название промпта</label>
+    <label class="fix-wrap" title="Не сбрасывать это поле после добавления и сохранения">
+      <input type="checkbox" id="titleFix"> фиксировать
+    </label>
+  </div>
   <input type="text" id="title" placeholder="например: portrait_style_01">
 
   <label for="positive">2. Положительный промпт</label>
@@ -82,6 +93,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <pre id="bufferPreview"></pre>
 
 <script>
+  const titleEl = document.getElementById('title');
+  const positiveEl = document.getElementById('positive');
+  const negativeEl = document.getElementById('negative');
+  const titleFixEl = document.getElementById('titleFix');
+
   async function refreshBuffer() {
     const r = await fetch('/api/buffer');
     const data = await r.json();
@@ -90,10 +106,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
       data.count ? JSON.stringify(data.items, null, 2) : '';
   }
 
+  function clearFields() {
+    if (!titleFixEl.checked) titleEl.value = '';
+    positiveEl.value = '';
+    negativeEl.value = '';
+  }
+
   document.getElementById('addBtn').onclick = async () => {
-    const title = document.getElementById('title').value.trim();
-    const positive = document.getElementById('positive').value;
-    const negative = document.getElementById('negative').value;
+    const title = titleEl.value.trim();
+    const positive = positiveEl.value;
+    const negative = negativeEl.value;
     if (!title && !positive && !negative) {
       document.getElementById('status').textContent = 'Пусто — нечего добавлять.';
       return;
@@ -105,17 +127,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
     });
     const data = await r.json();
     document.getElementById('status').textContent = data.message;
-    document.getElementById('title').value = '';
-    document.getElementById('positive').value = '';
-    document.getElementById('negative').value = '';
+    clearFields();
     refreshBuffer();
   };
 
   document.getElementById('saveBtn').onclick = async () => {
     const suffix = document.getElementById('suffix').value.trim();
-    const title = document.getElementById('title').value.trim();
-    const positive = document.getElementById('positive').value;
-    const negative = document.getElementById('negative').value;
+    const title = titleEl.value.trim();
+    const positive = positiveEl.value;
+    const negative = negativeEl.value;
     const r = await fetch('/api/save', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -124,9 +144,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     const data = await r.json();
     document.getElementById('status').textContent = data.message;
     if (data.saved) {
-      document.getElementById('title').value = '';
-      document.getElementById('positive').value = '';
-      document.getElementById('negative').value = '';
+      clearFields();
     }
     refreshBuffer();
   };
@@ -264,7 +282,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
 def _force_exit(signum, frame):
     """Жёсткий выход по Ctrl+C / SIGTERM — без ожидания второго сигнала."""
     print("\nОстановлено.", flush=True)
-    # Закрываем всё, что может держать процесс, и выходим немедленно.
     try:
         sys.stdout.flush()
         sys.stderr.flush()
@@ -274,8 +291,6 @@ def _force_exit(signum, frame):
 
 
 def main():
-    # Перехватываем сигналы ДО создания сервера, чтобы даже падение
-    # на bind() не оставляло нас без обработчика.
     signal.signal(signal.SIGINT, _force_exit)
     signal.signal(signal.SIGTERM, _force_exit)
 
@@ -296,7 +311,6 @@ def main():
     try:
         httpd.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
-        # На случай, если обработчик сигнала по какой-то причине не сработал.
         _force_exit(signal.SIGINT, None)
     finally:
         try:
@@ -307,3 +321,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
