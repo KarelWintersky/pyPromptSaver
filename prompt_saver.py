@@ -2,6 +2,11 @@
 """
 Простое приложение: запускается в консоли, поднимает локальный веб-сервер
 с формой для ввода промптов и сохраняет их в .py-файл рядом со скриптом.
+
+Логика:
+- "Добавить в группу" — кладёт текущий промпт в буфер (для группового сохранения).
+- "Сохранить" — сохраняет всё содержимое буфера.
+  Если буфер пуст — сохраняет текущие поля как один промпт.
 """
 
 import http.server
@@ -9,7 +14,6 @@ import socketserver
 import json
 import os
 from datetime import datetime
-from urllib.parse import parse_qs
 
 PORT = 8000
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -64,7 +68,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </div>
 
   <div id="status"></div>
-  <div id="bufferInfo">В буфере: <span id="count">0</span> промпт(ов)</div>
+  <div id="bufferInfo">
+    В буфере: <span id="count">0</span> промпт(ов).
+    Если буфер пуст — «Сохранить» запишет текущие поля как один промпт.
+  </div>
   <pre id="bufferPreview"></pre>
 
 <script>
@@ -91,7 +98,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
     });
     const data = await r.json();
     document.getElementById('status').textContent = data.message;
-    // очищаем поля после добавления
     document.getElementById('title').value = '';
     document.getElementById('positive').value = '';
     document.getElementById('negative').value = '';
@@ -99,9 +105,21 @@ HTML_PAGE = r"""<!DOCTYPE html>
   };
 
   document.getElementById('saveBtn').onclick = async () => {
-    const r = await fetch('/api/save', {method: 'POST'});
+    const title = document.getElementById('title').value.trim();
+    const positive = document.getElementById('positive').value;
+    const negative = document.getElementById('negative').value;
+    const r = await fetch('/api/save', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({title, positive, negative})
+    });
     const data = await r.json();
     document.getElementById('status').textContent = data.message;
+    if (data.saved) {
+      document.getElementById('title').value = '';
+      document.getElementById('positive').value = '';
+      document.getElementById('negative').value = '';
+    }
     refreshBuffer();
   };
 
@@ -120,16 +138,16 @@ def build_python_file(items):
         positive = it.get("positive", "")
         negative = it.get("negative", "")
         lines.append("    [")
-        lines.append(f'        # title')
+        lines.append('        # title')
         lines.append(f'        "{title}",')
-        lines.append(f'        # positive')
-        lines.append(f'        """')
+        lines.append('        # positive')
+        lines.append('        """')
         lines.append(positive)
-        lines.append(f'        """,')
-        lines.append(f'        # negative')
-        lines.append(f'        """')
+        lines.append('        """,')
+        lines.append('        # negative')
+        lines.append('        """')
         lines.append(negative)
-        lines.append(f'        """')
+        lines.append('        """')
         lines.append("    ],")
     lines.append("]")
     lines.append("")
@@ -170,22 +188,42 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "positive": data.get("positive", ""),
                 "negative": data.get("negative", ""),
             })
-            return self._json({"message": f"Добавлено. В буфере: {len(prompts_buffer)}"})
+            return self._json({"message": f"Добавлено в группу. В буфере: {len(prompts_buffer)}"})
 
         if self.path == "/api/save":
-            if not prompts_buffer:
-                return self._json({"message": "Буфер пуст — нечего сохранять."}, 400)
+            # Если буфер пуст — берём текущие поля как один промпт.
+            if prompts_buffer:
+                items = list(prompts_buffer)
+            else:
+                try:
+                    data = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception:
+                    data = {}
+                title = data.get("title", "").strip()
+                positive = data.get("positive", "")
+                negative = data.get("negative", "")
+                if not title and not positive and not negative:
+                    return self._json({
+                        "message": "Нечего сохранять: буфер пуст и поля пусты.",
+                        "saved": False,
+                    }, 400)
+                items = [{"title": title, "positive": positive, "negative": negative}]
+
             filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".py"
             path = os.path.join(SCRIPT_DIR, filename)
             with open(path, "w", encoding="utf-8") as f:
-                f.write(build_python_file(prompts_buffer))
+                f.write(build_python_file(items))
+
+            count = len(items)
             prompts_buffer.clear()
-            return self._json({"message": f"Сохранено в {filename}. Буфер очищен."})
+            return self._json({
+                "message": f"Сохранено {count} промпт(ов) в {filename}. Буфер очищен.",
+                "saved": True,
+            })
 
         self._send(404, "text/plain; charset=utf-8", b"Not found")
 
     def log_message(self, fmt, *args):
-        # тихий лог
         pass
 
 
