@@ -7,12 +7,14 @@
 - "Добавить в группу" — кладёт текущий промпт в буфер (для группового сохранения).
 - "Сохранить" — сохраняет всё содержимое буфера.
   Если буфер пуст — сохраняет текущие поля как один промпт.
+- Поле "Суффикс имени файла" — добавляется к имени файла через "_", если указан.
 """
 
 import http.server
 import socketserver
 import json
 import os
+import re
 from datetime import datetime
 
 PORT = 8000
@@ -52,6 +54,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
 </head>
 <body>
   <h1>Конструктор промптов</h1>
+
+  <label for="suffix">0. Суффикс имени файла (необязательно)</label>
+  <input type="text" id="suffix" placeholder="например: project_x (будет добавлен через _)">
 
   <label for="title">1. Название промпта</label>
   <input type="text" id="title" placeholder="например: portrait_style_01">
@@ -105,13 +110,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
   };
 
   document.getElementById('saveBtn').onclick = async () => {
+    const suffix = document.getElementById('suffix').value.trim();
     const title = document.getElementById('title').value.trim();
     const positive = document.getElementById('positive').value;
     const negative = document.getElementById('negative').value;
     const r = await fetch('/api/save', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({title, positive, negative})
+      body: JSON.stringify({suffix, title, positive, negative})
     });
     const data = await r.json();
     document.getElementById('status').textContent = data.message;
@@ -128,6 +134,26 @@ HTML_PAGE = r"""<!DOCTYPE html>
 </body>
 </html>
 """
+
+
+def sanitize_suffix(suffix: str) -> str:
+    """Оставляет в суффиксе только безопасные для имени файла символы."""
+    if not suffix:
+        return ""
+    # разрешаем буквы (в т.ч. кириллицу), цифры, дефис, подчёркивание, точку
+    suffix = suffix.strip()
+    suffix = re.sub(r"\s+", "_", suffix)
+    suffix = re.sub(r"[^\w\-.]+", "", suffix, flags=re.UNICODE)
+    suffix = suffix.strip("._-")
+    return suffix
+
+
+def build_filename(suffix: str = "") -> str:
+    base = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    safe = sanitize_suffix(suffix)
+    if safe:
+        return f"{base}_{safe}.py"
+    return f"{base}.py"
 
 
 def build_python_file(items):
@@ -191,15 +217,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json({"message": f"Добавлено в группу. В буфере: {len(prompts_buffer)}"})
 
         if self.path == "/api/save":
+            try:
+                data = json.loads(raw.decode("utf-8")) if raw else {}
+            except Exception:
+                data = {}
+
+            suffix = data.get("suffix", "")
+
             # Если буфер пуст — берём текущие поля как один промпт.
             if prompts_buffer:
                 items = list(prompts_buffer)
             else:
-                try:
-                    data = json.loads(raw.decode("utf-8")) if raw else {}
-                except Exception:
-                    data = {}
-                title = data.get("title", "").strip()
+                title = (data.get("title", "") or "").strip()
                 positive = data.get("positive", "")
                 negative = data.get("negative", "")
                 if not title and not positive and not negative:
@@ -209,7 +238,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     }, 400)
                 items = [{"title": title, "positive": positive, "negative": negative}]
 
-            filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".py"
+            filename = build_filename(suffix)
             path = os.path.join(SCRIPT_DIR, filename)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(build_python_file(items))
