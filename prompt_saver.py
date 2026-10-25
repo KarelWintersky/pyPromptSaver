@@ -102,8 +102,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
     const r = await fetch('/api/buffer');
     const data = await r.json();
     document.getElementById('count').textContent = data.count;
-    document.getElementById('bufferPreview').textContent =
-      data.count ? JSON.stringify(data.items, null, 2) : '';
+    const preview = document.getElementById('bufferPreview');
+    const label = document.getElementById('bufferPreviewLabel');
+    preview.textContent = data.count ? JSON.stringify(data.items, null, 2) : '';
+    label.style.display = data.count ? 'block' : 'none';
   }
 
   function clearFields() {
@@ -220,7 +222,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == "/" or self.path == "/index.html":
             self._send(200, "text/html; charset=utf-8", HTML_PAGE.encode("utf-8"))
         elif self.path == "/api/buffer":
-            self._json({"count": len(prompts_buffer), "items": prompts_buffer})
+            self._json({
+                "count": len(prompts_buffer),
+                "items": list(reversed(prompts_buffer)),
+            })
         else:
             self._send(404, "text/plain; charset=utf-8", b"Not found")
 
